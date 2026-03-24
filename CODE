@@ -1,0 +1,223 @@
+[1/30/2026 8:21 PM] sowgandh s: #include <WiFi.h>
+#include <PubSubClient.h>
+
+/* ================= WIFI ================= */
+const char* ssid     = "";
+const char* password = "";
+
+/* ================= MQTT ================= */
+const char* mqtt_server = "broker.hivemq.com";
+const int   mqtt_port   = 1883;
+
+/* ================= RELAYS (NEGATIVE LOGIC) ============== */
+// Motor 1
+#define RELAY_M1_ON   4
+#define RELAY_M1_OFF  5
+
+// Motor 2
+#define RELAY_M2_ON   18
+#define RELAY_M2_OFF  19
+#define LED 14
+/* ================= TIMING ================= */
+const unsigned long PULSE_TIME = 4000;      // 5 seconds
+const unsigned long HEARTBEAT_INTERVAL = 2000;
+
+/* ================= VOLTAGE SENSORS ===================== */
+#define V_R 35
+#define V_Y 34
+#define V_B 32
+
+
+float voltageCal_R = 76.67;   // adjust as per sensor
+float voltageCal_Y = 76.67;
+float voltageCal_B = 76.67;
+
+#define VREF 3.3
+#define ADC_MAX 4095.0
+#define VOLT_SAMPLES 1500
+
+/* ================= GLOBALS ============================= */
+WiFiClient espClient;
+PubSubClient client(espClient);
+HardwareSerial nanoSerial(2);
+unsigned long bootTime = 0;
+const unsigned long IGNORE_CMD_MS = 3000; // 3 sec after boot
+unsigned long lastHeartbeat = 0;
+unsigned long lastSend = 0;
+unsigned long lastReconnectAttempt = 0;
+int activeRelay = -1;
+unsigned long relayOnTime = 0;
+char activeFeedback = 0; // A/B/C/D
+
+/* ================= TRUE RMS VOLTAGE ==================== */
+float readACVoltage(int pin, float calibration) {
+  analogSetPinAttenuation(pin, ADC_11db);   // 0–3.3V
+  int adc = analogRead(pin);
+  float vout = (adc / 4095.0) * 3.3;
+  float vac  = vout * calibration;
+  if (vac < 10) vac = 0;   // noise cut
+  return vac;
+}
+
+/* ================= RELAY CONTROL ======================= */
+void setRelay(int pin, char feedback) {
+  // Turn all relays OFF first
+  digitalWrite(RELAY_M1_ON,  HIGH);
+  digitalWrite(RELAY_M1_OFF, HIGH);
+  digitalWrite(RELAY_M2_ON,  HIGH);
+  digitalWrite(RELAY_M2_OFF, HIGH);
+
+  // Activate selected relay
+  digitalWrite(pin, LOW);
+  activeRelay = pin;
+  relayOnTime = millis();
+  activeFeedback = feedback;
+
+  Serial.printf("🔌 Relay %d ON for 5 seconds, feedback: %c\n", pin, feedback);
+  client.publish("farm/mcu/state", String(feedback).c_str(), true); // Optional general feedback
+}
+
+/* ================= MQTT CALLBACK ======================= */
+void callback(char* topic, byte* payload, unsigned int length) {
+  if (millis() - bootTime < IGNORE_CMD_MS) {
+  Serial.println("🚫 Ignoring retained MQTT command after boot");
+  return;
+}
+  String msg;
+  for (unsigned int i = 0; i < length; i++)
+    msg += (char)payload[i];
+  msg.trim();
+
+  Serial.printf("📩 %s → %s\n", topic, msg.c_str());
+
+  // Motor 1
+  if (strcmp(topic, "***/m1/cmd") == 0) {
+    if (msg == "A") setRelay(RELAY_M1_ON, 'A');   // Motor1 ON
+    if (msg == "B") setRelay(RELAY_M1_OFF, 'B');  // Motor1 OFF
+  }
+
+  // Motor 2
+  if (strcmp(topic, "***/m2/cmd") == 0) {
+    if (msg == "C") setRelay(RELAY_M2_ON, 'C');   // Motor2 ON
+    if (msg == "D") setRelay(RELAY_M2_OFF, 'D');  // Motor2 OFF
+  }
+}
+
+/* ================= MQTT CONNECT ======================== */
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("🔄 MQTT Connecting...");
+    if (client.connect("ESP32_FARM_NODE","***/mcu/status", 1, true, "OFF")) {
+      Serial.println(" OK");
+      client.publish("***/mcu/status", "ON", true);
+       client.publish("***/m1/cmd", "", true);
+client.publish("***/m2/cmd", "", true);  
+  client.subscribe("farm/m1/cmd");
+  client.subscribe("farm/m2/cmd");
+
+
+    } else {
+      Serial.print(" FAILED rc=");
+      Serial.println(client.state());
+      delay(2000);
+    }
+  }
+}
+
+/* ================= SETUP =============================== */
+void setup() {
+  bootTime = millis();
+  Serial.begin(115200);
+  analogReadResolution(12);
+
+  pinMode(RELAY_M1_ON,  OUTPUT);
+  pinMode(RELAY_M1_OFF, OUTPUT);
+  pinMode(RELAY_M2_ON,  OUTPUT);
+  pinMode(RELAY_M2_OFF, OUTPUT);
+  pinMode(LED, OUTPUT);
+[1/30/2026 8:21 PM] sowgandh s: // All relays OFF
+  digitalWrite(RELAY_M1_ON,  HIGH);
+  digitalWrite(RELAY_M1_OFF, HIGH);
+  digitalWrite(RELAY_M2_ON,  HIGH);
+  digitalWrite(RELAY_M2_OFF, HIGH);
+
+  nanoSerial.begin(9600, SERIAL_8N1, 16, 17);
+ digitalWrite(LED,LOW);
+  WiFi.begin(ssid, password);
+  Serial.print("📶 WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    digitalWrite(LED,LOW);
+  }
+  Serial.println(" CONNECTED");
+  digitalWrite(LED,HIGH);
+
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+}
+
+/* ================= LOOP ================================ */
+
+
+void loop() {
+
+  if (!client.connected()) {
+    unsigned long now = millis();
+    if (now - lastReconnectAttempt > 3000) {
+      lastReconnectAttempt = now;
+      reconnect();
+    }
+    return; // ⛔️ don't run rest of loop until connected
+  }
+
+  client.loop();
+
+  // Heartbeat
+  if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+    lastHeartbeat = millis();
+    client.publish("farm/mcu/status", "ON", true);
+  }
+// Relay auto OFF after pulse
+if (activeRelay != -1 && millis() - relayOnTime >= PULSE_TIME) {
+
+  digitalWrite(activeRelay, HIGH);
+  Serial.printf("⏱️ Relay %d OFF, feedback: %c\n", activeRelay, activeFeedback);
+
+  if (activeFeedback == 'A'  activeFeedback == 'B') {
+    client.publish("farm/m1/state", String(activeFeedback).c_str(), true);
+  }
+
+
+  if (activeFeedback == 'C'  activeFeedback == 'D') {
+    client.publish("farm/m2/state", String(activeFeedback).c_str(), true);
+  }
+
+  activeRelay = -1;
+  activeFeedback = 0;
+}
+
+  // Receive current from Nano
+  if (nanoSerial.available()) {
+    String nanoData = nanoSerial.readStringUntil('\n');
+    nanoData.trim();
+    client.publish("***/current/all", nanoData.c_str(), true);
+    Serial.print("arduino CONNECTED");
+    Serial.println(nanoData);
+
+  }
+
+  // Send voltage
+  if (millis() - lastSend > 2000) {
+    lastSend = millis();
+    String vRYB = "{";
+vRYB += "\"R\":" + String(readACVoltage(V_R, voltageCal_R), 1) + ",";
+vRYB += "\"Y\":" + String(readACVoltage(V_Y, voltageCal_Y), 1) + ",";
+vRYB += "\"B\":" + String(readACVoltage(V_B, voltageCal_B), 1);
+
+    vRYB += "}";
+    client.publish("****/voltage/ryb", vRYB.c_str(), true);
+
+ 
+  }
+}
