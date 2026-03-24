@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Motor Power Dashboard</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+<style>
+.status-box{
+    height:45px;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    font-weight:bold;
+}
+.red{color:red;}
+.yellow{color:goldenrod;}
+.blue{color:blue;}
+#motorGif1,#motorGif2{
+    display:none;
+    width:120px;
+    margin:10px auto;
+}
+.btn.active{
+    filter: blur(0.8px);
+    opacity: 0.6;
+    box-shadow: inset 0 0 12px rgba(0,0,0,0.6);
+    transform: scale(0.97);
+}
+
+/* Keep OFF button normal when not active */
+.btn:not(.active){
+    filter: none;
+    opacity: 1;
+    box-shadow: none;
+    transform: scale(1);
+}
+
+
+</style>
+</head>
+
+<body class="bg-light">
+<div class="container my-3">
+
+<h3 class="text-center mb-3">Triox Technologies Motor Dashboard</h3>
+<div id="mqttStatus" class="text-center fw-bold text-success mb-3">Connecting...</div>
+<div id="voltageAlert" class="alert alert-danger text-center fw-bold d-none">
+⚠️ LOW VOLTAGE DETECTED! (Below 150V)
+</div>
+<div id="deviceAlert" class="alert alert-warning text-center fw-bold d-none">
+⚠️ ESP32 OFFLINE – Controls Disabled
+</div>
+
+
+
+<div class="row g-3">
+
+<!-- ================= COMMON RYB VOLTAGE ================= -->
+<div class="col-12">
+<div class="card">
+<div class="card-header text-center fw-bold">Supply Voltage (RYB  Common)</div>
+<div class="card-body">
+<div class="status-box red" id="vR">R: 0 V</div>
+<div class="status-box yellow" id="vY">Y: 0 V</div>
+<div class="status-box blue" id="vB">B: 0 V</div>
+</div>
+</div>
+</div>
+
+<!-- ================= MOTOR 1 CURRENT ================= -->
+<div class="col-md-6">
+<div class="card">
+<div class="card-header text-center fw-bold">Motor 1 Current</div>
+<div class="card-body">
+<div class="status-box red" id="m1_CR">R: 0 A</div>
+<div class="status-box yellow" id="m1_CY">Y: 0 A</div>
+<div class="status-box blue" id="m1_CB">B: 0 A</div>
+</div>
+</div>
+</div>
+
+<!-- ================= MOTOR 2 CURRENT ================= -->
+<div class="col-md-6">
+<div class="card">
+<div class="card-header text-center fw-bold">Motor 2 Current</div>
+<div class="card-body">
+<div class="status-box red" id="m2_CR">R: 0 A</div>
+<div class="status-box yellow" id="m2_CY">Y: 0 A</div>
+<div class="status-box blue" id="m2_CB">B: 0 A</div>
+</div>
+</div>
+</div>
+
+<!-- ================= MOTOR CONTROLS ================= -->
+<div class="col-md-6">
+<div class="card text-center">
+<div class="card-header fw-bold">Motor 1 Control</div>
+<div class="card-body">
+<div class="status-box mb-2" id="motor1Status">OFF</div>
+<img id="motorGif1" src="https://media.tenor.com/3KXUzttQzPwAAAAM/1.gif">
+<button id="motor1On"  class="btn btn-success w-50 mt-2">ON</button>
+<button id="motor1Off" class="btn btn-danger  w-50 mt-2">OFF</button>
+
+</div>
+</div>
+</div>
+
+<div class="col-md-6">
+<div class="card text-center">
+<div class="card-header fw-bold">Motor 2 Control</div>
+<div class="card-body">
+<div class="status-box mb-2" id="motor2Status">OFF</div>
+<img id="motorGif2" src="https://media.tenor.com/3KXUzttQzPwAAAAM/1.gif">
+<button id="motor2On"  class="btn btn-success w-50 mt-2">ON</button>
+<button id="motor2Off" class="btn btn-danger  w-50 mt-2">OFF</button>
+
+</div>
+</div>
+</div>
+
+</div>
+</div>
+
+<script>
+let lastVoltageTime = 0;
+
+
+let m1Current = { R:0, Y:0, B:0 };
+let m2Current = { R:0, Y:0, B:0 };
+
+let lowVoltageActive = false;
+
+let motor1=false;
+let motor2=false;
+
+
+const client = mqtt.connect("wss://broker.hivemq.com:8884/mqtt");
+
+client.on("connect",()=>{
+    mqttStatus.innerText="MQTT Connected ✓";
+
+ client.subscribe([
+    "farm/voltage/ryb",
+    "farm/current/all",
+    "farm/**/state",
+    "farm/**/state"
+]);
+});
+
+client.on("message",(topic,message)=>{
+    const msg = message.toString();
+
+
+if(topic === "farm/voltage/ryb"){
+    lastVoltageTime = Date.now();   // ✅ ONLY voltage updates status
+    deviceOnline = true;
+    updateDeviceStatus();
+
+    const v = JSON.parse(msg);
+
+    const VR = v.R || 0;
+    const VY = v.Y || 0;
+    const VB = v.B || 0;
+
+    vR.innerText = `R: ${VR} V`;
+    vY.innerText = `Y: ${VY} V`;
+    vB.innerText = `B: ${VB} V`;
+
+    if(VR < 150 || VY < 150 || VB < 150){
+        voltageAlert.classList.remove("d-none");
+    } else {
+        voltageAlert.classList.add("d-none");
+		
+    }
+	updateUI(); 
+}
+
+
+    else if(topic==="farm/current/all"){
+        const data = JSON.parse(msg);
+
+        if(data.M1){
+            m1Current = data.M1;
+        }
+        if(data.M2){
+            m2Current = data.M2;
+        }
+        updateCurrentUI();
+    }
+
+    if(topic==="farm/m1/state"){
+        motor1 = (msg === "A");
+        motor1Status.innerText = motor1 ? "ON" : "OFF";
+        motorGif1.style.display = motor1 ? "block" : "none";
+		setMotorButtonState(1, motor1 ? "ON" : "OFF");
+    }
+
+    if(topic==="farm/m2/state"){
+        motor2 = (msg === "C");
+        motor2Status.innerText = motor2 ? "ON" : "OFF";
+        motorGif2.style.display = motor2 ? "block" : "none";
+		 setMotorButtonState(2, motor2 ? "ON" : "OFF");
+    }
+
+    updateUI();
+});
+function setMotorButtonState(motorNo, state){
+    let onBtn, offBtn;
+
+    if(motorNo === 1){
+        onBtn  = motor1On;
+        offBtn = motor1Off;
+    }else if(motorNo === 2){
+        onBtn  = motor2On;
+        offBtn = motor2Off;
+    }
+
+    if(state === "ON"){
+        onBtn.classList.add("active");
+        offBtn.classList.remove("active");
+    }else{
+        offBtn.classList.add("active");
+        onBtn.classList.remove("active");
+    }
+}
+
+function updateCurrentUI(){
+
+    // MOTOR 1 CURRENT DISPLAY
+    if(motor1){
+        m1_CR.innerText = `R: ${m1Current.R || 0} A`;
+        m1_CY.innerText = `Y: ${m1Current.Y || 0} A`;
+        m1_CB.innerText = `B: ${m1Current.B || 0} A`;
+    } else {
+        m1_CR.innerText = "R: 0 A";
+        m1_CY.innerText = "Y: 0 A";
+        m1_CB.innerText = "B: 0 A";
+    }
+
+    // MOTOR 2 CURRENT DISPLAY
+    if(motor2){
+        m2_CR.innerText = `R: ${m2Current.R || 0} A`;
+        m2_CY.innerText = `Y: ${m2Current.Y || 0} A`;
+        m2_CB.innerText = `B: ${m2Current.B || 0} A`;
+    } else {
+        m2_CR.innerText = "R: 0 A";
+        m2_CY.innerText = "Y: 0 A";
+        m2_CB.innerText = "B: 0 A";
+    }
+}
+
+function updateUI(){
+    // Motor 1 UI
+// Button lock logic
+motor1On.disabled  = motor2;
+motor1Off.disabled = false;
+
+motor2On.disabled  = motor1;
+motor2Off.disabled = false;
+
+}
+function updateDeviceStatus(){
+    if(deviceOnline){
+        deviceAlert.classList.add("d-none");
+
+        // enable based on interlock
+        motor1On.disabled  = motor2;
+        motor1Off.disabled = false;
+
+        motor2On.disabled  = motor1;
+        motor2Off.disabled = false;
+    }
+}
+
+setInterval(()=>{
+    if(Date.now() - lastVoltageTime > 5000){
+
+        deviceOnline = false;
+        deviceAlert.classList.remove("d-none");
+
+        motor1On.disabled  = true;
+        motor1Off.disabled = true;
+        motor2On.disabled  = true;
+        motor2Off.disabled = true;
+
+        motor1Status.innerText = "OFFLINE";
+        motor2Status.innerText = "OFFLINE";
+
+        motorGif1.style.display = "none";
+        motorGif2.style.display = "none";
+    }
+},1000);
+
+
+
+
+// Button actions
+// ===== MOTOR 1 BUTTONS =====
+// ===== MOTOR 1 =====
+// MOTOR 1
+motor1On.onclick = ()=>{
+    if(!deviceOnline) return;
+
+    client.publish("farm/**/cmd","A",{retain:false});
+
+    motor1On.classList.add("active");
+    motor1Off.classList.remove("active");
+};
+
+motor1Off.onclick = ()=>{
+    if(!deviceOnline) return;
+
+    client.publish("farm/**/cmd","B",{retain:false});
+
+    motor1Off.classList.add("active");
+    motor1On.classList.remove("active");
+};
+
+
+
+
+// MOTOR 2
+motor2On.onclick = ()=>{
+    if(!deviceOnline) return;
+
+    client.publish("farm/**/cmd","C",{retain:false});
+
+    motor2On.classList.add("active");
+    motor2Off.classList.remove("active");
+};
+
+motor2Off.onclick = ()=>{
+    if(!deviceOnline) return;
+
+    client.publish("farm/**/cmd","D",{retain:false});
+
+    motor2Off.classList.add("active");
+    motor2On.classList.remove("active");
+};
+
+
+
+
+</script>
+
+
+</body>
+</html>
+
+
